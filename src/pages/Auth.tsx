@@ -3,32 +3,48 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Users, Building, Mail, Lock, UserPlus, LogIn } from 'lucide-react';
+import { Building, Mail, Lock, UserPlus, LogIn } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
+import { toast } from '@/hooks/use-toast';
 
-interface AuthProps {
-  onLogin: (user: any) => void;
-}
-
-export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
+export const Auth: React.FC = () => {
   const [isLogin, setIsLogin] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
     email: '',
     password: '',
     name: '',
-    employeeId: ''
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const user = {
-      id: Math.random().toString(36).substr(2, 9),
-      email: formData.email,
-      name: formData.name || formData.email.split('@')[0],
-      employeeId: formData.employeeId || `EMP${Math.random().toString(36).substr(2, 6).toUpperCase()}`,
-      avatar: formData.name ? formData.name.split(' ').map(n => n[0]).join('').toUpperCase() : 'U'
-    };
-    localStorage.setItem('user', JSON.stringify(user));
-    onLogin(user);
+    setLoading(true);
+
+    try {
+      if (isLogin) {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: formData.email,
+          password: formData.password,
+        });
+        if (error) throw error;
+        toast({ title: "Welcome back!", description: "Successfully signed in." });
+      } else {
+        const { error } = await supabase.auth.signUp({
+          email: formData.email,
+          password: formData.password,
+          options: {
+            data: { display_name: formData.name },
+            emailRedirectTo: window.location.origin,
+          },
+        });
+        if (error) throw error;
+        toast({ title: "Account created!", description: "Check your email to verify your account, or sign in directly." });
+      }
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -51,16 +67,10 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             {!isLogin && (
-              <>
-                <div className="space-y-2">
-                  <Label htmlFor="name">Full Name</Label>
-                  <Input id="name" type="text" placeholder="Enter your full name" value={formData.name} onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))} required={!isLogin} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="employeeId">Employee ID (Optional)</Label>
-                  <Input id="employeeId" type="text" placeholder="Your employee ID" value={formData.employeeId} onChange={(e) => setFormData(prev => ({ ...prev, employeeId: e.target.value }))} />
-                </div>
-              </>
+              <div className="space-y-2">
+                <Label htmlFor="name">Full Name</Label>
+                <Input id="name" type="text" placeholder="Enter your full name" value={formData.name} onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))} required={!isLogin} />
+              </div>
             )}
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
@@ -73,20 +83,17 @@ export const Auth: React.FC<AuthProps> = ({ onLogin }) => {
               <Label htmlFor="password">Password</Label>
               <div className="relative">
                 <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
-                <Input id="password" type="password" placeholder="Enter your password" className="pl-10" value={formData.password} onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))} required />
+                <Input id="password" type="password" placeholder="Enter your password (min 6 chars)" className="pl-10" value={formData.password} onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))} required minLength={6} />
               </div>
             </div>
-            <Button type="submit" className="w-full bg-gradient-to-r from-purple-500 to-blue-500">
-              {isLogin ? (<><LogIn className="mr-2 h-4 w-4" />Sign In</>) : (<><UserPlus className="mr-2 h-4 w-4" />Create Account</>)}
+            <Button type="submit" className="w-full bg-gradient-to-r from-purple-500 to-blue-500" disabled={loading}>
+              {loading ? 'Please wait...' : isLogin ? (<><LogIn className="mr-2 h-4 w-4" />Sign In</>) : (<><UserPlus className="mr-2 h-4 w-4" />Create Account</>)}
             </Button>
           </form>
           <div className="mt-6 text-center">
             <button type="button" onClick={() => setIsLogin(!isLogin)} className="text-purple-600 hover:text-purple-800 text-sm font-medium">
               {isLogin ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
             </button>
-          </div>
-          <div className="mt-4 p-3 bg-gray-50 rounded-lg">
-            <p className="text-xs text-gray-600 text-center">Demo: Use any email/password to login</p>
           </div>
         </CardContent>
       </Card>

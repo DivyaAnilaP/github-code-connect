@@ -1,18 +1,22 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Building, Plus, Users, LogOut, Copy, Check } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
+import { toast } from '@/hooks/use-toast';
 
 interface Workspace {
   id: string;
   name: string;
-  description: string;
-  memberCount: number;
+  description: string | null;
+  invite_code: string;
+  owner_id: string;
+  memberCount?: number;
   isOwner: boolean;
-  inviteCode: string;
+  role: string;
 }
 
 interface WorkspaceSelectionProps {
@@ -27,38 +31,148 @@ export const WorkspaceSelection: React.FC<WorkspaceSelectionProps> = ({ user, on
   const [inviteCode, setInviteCode] = useState('');
   const [newWorkspace, setNewWorkspace] = useState({ name: '', description: '' });
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([
-    { id: 'ws1', name: 'Tech Team Alpha', description: 'Frontend development team', memberCount: 12, isOwner: true, inviteCode: 'TECH-ALPHA-2024' },
-    { id: 'ws2', name: 'Marketing Squad', description: 'Creative marketing campaigns', memberCount: 8, isOwner: false, inviteCode: 'MARKET-SQUAD-2024' }
-  ]);
+  useEffect(() => {
+    fetchWorkspaces();
+  }, []);
 
-  const handleCreateWorkspace = () => {
-    const workspace: Workspace = {
-      id: `ws${Date.now()}`,
-      name: newWorkspace.name,
-      description: newWorkspace.description,
-      memberCount: 1,
-      isOwner: true,
-      inviteCode: `${newWorkspace.name.toUpperCase().replace(/\s+/g, '-')}-${Date.now().toString().slice(-4)}`
-    };
-    setWorkspaces(prev => [...prev, workspace]);
-    setNewWorkspace({ name: '', description: '' });
-    setShowCreateForm(false);
+  const fetchWorkspaces = async () => {
+    try {
+      // Get workspaces where user is a member
+      const { data: memberData, error: memberError } = await supabase
+        .from('workspace_members')
+        .select('workspace_id, role')
+        .eq('user_id', user.id);
+
+      if (memberError) throw memberError;
+      if (!memberData || memberData.length === 0) {
+        setWorkspaces([]);
+        setLoading(false);
+        return;
+      }
+
+      const workspaceIds = memberData.map(m => m.workspace_id);
+      const { data: wsData, error: wsError } = await supabase
+        .from('workspaces')
+        .select('*')
+        .in('id', workspaceIds);
+
+      if (wsError) throw wsError;
+
+      // Get member counts
+      const workspacesWithDetails: Workspace[] = await Promise.all(
+        (wsData || []).map(async (ws) => {
+          const { count } = await supabase
+            .from('workspace_members')
+            .select('*', { count: 'exact', head: true })
+            .eq('workspace_id', ws.id);
+
+          const memberRole = memberData.find(m => m.workspace_id === ws.id)?.role || 'member';
+          return {
+            ...ws,
+            memberCount: count || 1,
+            isOwner: ws.owner_id === user.id,
+            role: memberRole,
+          };
+        })
+      );
+
+      setWorkspaces(workspacesWithDetails);
+    } catch (error) {
+      console.error('Error fetching workspaces:', error);
+      toast({ title: "Error", description: "Failed to load workspaces", variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleJoinWorkspace = () => {
-    const workspace: Workspace = {
-      id: `ws${Date.now()}`,
-      name: 'Joined Workspace',
-      description: 'Workspace joined via invite code',
-      memberCount: 15,
-      isOwner: false,
-      inviteCode: inviteCode
-    };
-    setWorkspaces(prev => [...prev, workspace]);
-    setInviteCode('');
-    setShowJoinForm(false);
+  const handleCreateWorkspace = async () => {
+    if (!newWorkspace.name.trim()) return;
+    try {
+      const { data, error } = await supabase
+        .from('workspaces')
+        .insert({
+          name: newWorkspace.name,
+          description: newWorkspace.description || null,
+          owner_id: user.id,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      // Add creator as owner member
+      const { error: memberError } = await supabase
+        .from('workspace_members')
+        .insert({
+          workspace_id: data.id,
+          user_id: user.id,
+          role: 'owner',
+        });
+
+      if (memberError) throw memberError;
+
+      toast({ title: "Workspace Created!", description: `"${data.name}" is ready to go.` });
+      setNewWorkspace({ name: '', description: '' });
+      setShowCreateForm(false);
+      fetchWorkspaces();
+    } catch (error: any) {
+      console.error('Error creating workspace:', error);
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    }
+  };
+
+  const handleJoinWorkspace = async () => {
+    if (!inviteCode.trim()) return;
+    try {
+      // Find workspace by invite code
+      const { data: ws, error: wsError } = await supabase
+        .from('workspaces')
+        .select('*')
+        .eq('invite_code', inviteCode.trim().toUpperCase())
+        .maybeSingle();
+
+      if (wsError) throw wsError;
+      if (!ws) {
+        toast({ title: "Not Found", description: "No workspace found with that invite code.", variant: "destructive" });
+        return;
+      }
+
+      // Check if already a member
+      const { data: existing } = await supabase
+        .from('workspace_members')
+        .select('id')
+        .eq('workspace_id', ws.id)
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (existing) {
+        toast({ title: "Already a member", description: "You're already in this workspace." });
+        setInviteCode('');
+        setShowJoinForm(false);
+        return;
+      }
+
+      const { error: joinError } = await supabase
+        .from('workspace_members')
+        .insert({
+          workspace_id: ws.id,
+          user_id: user.id,
+          role: 'member',
+        });
+
+      if (joinError) throw joinError;
+
+      toast({ title: "Joined!", description: `You've joined "${ws.name}".` });
+      setInviteCode('');
+      setShowJoinForm(false);
+      fetchWorkspaces();
+    } catch (error: any) {
+      console.error('Error joining workspace:', error);
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    }
   };
 
   const copyInviteCode = (code: string) => {
@@ -66,6 +180,14 @@ export const WorkspaceSelection: React.FC<WorkspaceSelectionProps> = ({ user, on
     setCopiedCode(code);
     setTimeout(() => setCopiedCode(null), 2000);
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-100 flex items-center justify-center">
+        <p className="text-gray-600">Loading workspaces...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-100 p-4">
@@ -125,35 +247,45 @@ export const WorkspaceSelection: React.FC<WorkspaceSelectionProps> = ({ user, on
           </Card>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {workspaces.map((workspace) => (
-            <Card key={workspace.id} className="hover:shadow-lg transition-shadow cursor-pointer">
-              <CardHeader>
-                <div className="flex items-start justify-between">
-                  <div>
-                    <CardTitle className="text-lg">{workspace.name}</CardTitle>
-                    <p className="text-gray-600 text-sm mt-1">{workspace.description}</p>
-                  </div>
-                  {workspace.isOwner && <Badge variant="secondary">Owner</Badge>}
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2 text-sm text-gray-600"><Users size={16} /><span>{workspace.memberCount} members</span></div>
-                  {workspace.isOwner && (
-                    <div className="flex items-center gap-2">
-                      <code className="text-xs bg-gray-100 px-2 py-1 rounded flex-1">{workspace.inviteCode}</code>
-                      <Button size="sm" variant="outline" onClick={() => copyInviteCode(workspace.inviteCode)}>
-                        {copiedCode === workspace.inviteCode ? <Check size={12} /> : <Copy size={12} />}
-                      </Button>
+        {workspaces.length === 0 ? (
+          <Card>
+            <CardContent className="p-8 text-center">
+              <Building className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-semibold text-gray-700 mb-2">No Workspaces Yet</h3>
+              <p className="text-gray-500">Create a new workspace or join one using an invite code.</p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {workspaces.map((workspace) => (
+              <Card key={workspace.id} className="hover:shadow-lg transition-shadow cursor-pointer">
+                <CardHeader>
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <CardTitle className="text-lg">{workspace.name}</CardTitle>
+                      <p className="text-gray-600 text-sm mt-1">{workspace.description}</p>
                     </div>
-                  )}
-                  <Button className="w-full" onClick={() => onSelectWorkspace(workspace)}>Enter Workspace</Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+                    {workspace.isOwner && <Badge variant="secondary">Owner</Badge>}
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 text-sm text-gray-600"><Users size={16} /><span>{workspace.memberCount} members</span></div>
+                    {workspace.isOwner && (
+                      <div className="flex items-center gap-2">
+                        <code className="text-xs bg-gray-100 px-2 py-1 rounded flex-1">{workspace.invite_code}</code>
+                        <Button size="sm" variant="outline" onClick={() => copyInviteCode(workspace.invite_code)}>
+                          {copiedCode === workspace.invite_code ? <Check size={12} /> : <Copy size={12} />}
+                        </Button>
+                      </div>
+                    )}
+                    <Button className="w-full" onClick={() => onSelectWorkspace(workspace)}>Enter Workspace</Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
